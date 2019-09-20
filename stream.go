@@ -16,9 +16,8 @@ type Stream struct {
 	id   uint32
 	sess *Session
 
-	buffers    [][]byte
-	bufferSize uint32   // to track total num of bytes in buffers
-	heads      [][]byte // slice heads kept for recycle
+	buffers [][]byte
+	heads   [][]byte // slice heads kept for recycle
 
 	bufferLock sync.Mutex
 	frameSize  int
@@ -38,14 +37,11 @@ type Stream struct {
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
 
-	// count writes, for tx queue shaper
-	numWrite uint64
-
-	// remote window, remote will update this value perodically
-	// for setting per-stream max socket buffer, default to 64KB
-	numRead        uint32        // temporary recording of bytes read
-	sendWindow     uint32        // remote window size
-	chWindowChange chan struct{} // notify of remote window change
+	// per stream sliding window control
+	numRead    uint32        // temporary tracking of bytes read, capped to half window
+	numWritten uint32        // count num of bytes written
+	numSink    uint32        // peer data consumed, starting from 0
+	chSink     chan struct{} // notify of remote data consuming
 }
 
 // newStream initiates a Stream struct
@@ -53,12 +49,11 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.chReadEvent = make(chan struct{}, 1)
-	s.chWindowChange = make(chan struct{}, 1)
+	s.chSink = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.sendWindow = uint32(sess.config.MaxStreamBuffer)
 	return s
 }
 
@@ -73,9 +68,8 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	var sendWindowUpdate bool
-	var recvWindow uint32
 	for {
+		var sendSink bool
 		s.bufferLock.Lock()
 		if len(s.buffers) > 0 {
 			n = copy(b, s.buffers[0])
@@ -88,14 +82,15 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 				s.heads = s.heads[1:]
 			}
 		}
-		s.bufferSize -= uint32(n)
 		s.numRead += uint32(n)
-		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) && s.bufferSize < uint32(s.sess.config.MaxStreamBuffer) {
-			sendWindowUpdate = true
-			recvWindow = uint32(s.sess.config.MaxStreamBuffer) - s.bufferSize
-			s.numRead = 0 // reset
+		// if more than half of buffer has consumed, send read ack to peer
+		// based on round-trip time of ACK, continous flowing data
+		// won't slow down because of waiting for ACK, as long as the
+		// consumer keeps on reading data
+		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) {
+			sendSink = true
+			s.numRead %= uint32(s.sess.config.MaxStreamBuffer / 2)
 		}
-		//log.Println("numread:", s.numRead, "s.buffersize:", s.bufferSize)
 		s.bufferLock.Unlock()
 
 		// create timer
@@ -109,10 +104,10 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 		if n > 0 {
 			s.sess.returnTokens(n)
-			if sendWindowUpdate {
-				frame := newFrame(cmdWND, s.id)
-				frame.data = make([]byte, szWindowUpdate)
-				binary.LittleEndian.PutUint32(frame.data, recvWindow)
+			if sendSink {
+				frame := newFrame(cmdSINK, s.id)
+				frame.data = make([]byte, szCmdSINK)
+				binary.LittleEndian.PutUint32(frame.data, uint32(s.sess.config.MaxStreamBuffer/2))
 				s.sess.writeFrameInternal(frame, deadline, 0)
 			}
 			return n, nil
@@ -137,15 +132,9 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 // Write implements net.Conn
 func (s *Stream) Write(b []byte) (n int, err error) {
+	// check empty input
 	if len(b) == 0 {
 		return 0, nil
-	}
-
-	var deadline <-chan time.Time
-	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer := time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
 	}
 
 	// check if stream has closed
@@ -155,50 +144,59 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	default:
 	}
 
+	// create write deadline timer
+	var deadline <-chan time.Time
+	if d, ok := s.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer := time.NewTimer(time.Until(d))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
 	// frame split and transmit process
-	var bts []byte
 	sent := 0
 	frame := newFrame(cmdPSH, s.id)
 
 	for {
-		// window control
-		win := atomic.LoadUint32(&s.sendWindow)
-		if win > uint32(len(b)) {
-			bts = b
-			b = nil
-		} else {
-			bts = b[:win] // win=0 still works
-			b = b[win:]
-		}
-
-		if win > 0 { // shrink window
-			atomic.AddUint32(&s.sendWindow, ^uint32(len(bts)-1))
-		}
-
-		for len(bts) > 0 {
-			sz := len(bts)
-			if sz > s.frameSize {
-				sz = s.frameSize
+		// per stream sliding window control
+		// [.... [sink... numWrite] ... win... ]
+		// [.... [sink.........MaxStreamBuffer]]
+		var bts []byte
+		win := s.sess.config.MaxStreamBuffer - int(s.numWritten-atomic.LoadUint32(&s.numSink))
+		if win > 0 {
+			if win > len(b) {
+				bts = b
+				b = nil
+			} else {
+				bts = b[:win]
+				b = b[win:]
 			}
-			frame.data = bts[:sz]
-			bts = bts[sz:]
-			n, err := s.sess.writeFrameInternal(frame, deadline, s.numWrite)
-			s.numWrite++
-			sent += n
-			if err != nil {
-				return sent, errors.WithStack(err)
+
+			for len(bts) > 0 {
+				sz := len(bts)
+				if sz > s.frameSize {
+					sz = s.frameSize
+				}
+				frame.data = bts[:sz]
+				bts = bts[sz:]
+				n, err := s.sess.writeFrameInternal(frame, deadline, uint64(s.numWritten))
+				s.numWritten += uint32(sz)
+				sent += n
+				if err != nil {
+					return sent, errors.WithStack(err)
+				}
 			}
 		}
 
-		// if there is data remaining to be sent
-		// wait for stream close or window change or deadline
+		// if there is any data remaining to be sent
+		// wait until stream closes, window changes or deadline reached
+		// this blocking behavior will inform upper layer to do flow control
 		if len(b) > 0 {
 			select {
 			case <-s.die:
 				return sent, errors.WithStack(io.ErrClosedPipe)
 			case <-deadline:
 				return sent, errors.WithStack(errTimeout)
-			case <-s.chWindowChange:
+			case <-s.chSink:
 				continue
 			}
 		} else {
@@ -288,7 +286,6 @@ func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
 	s.heads = append(s.heads, buf)
-	s.bufferSize += uint32(len(buf))
 	s.bufferLock.Unlock()
 	return
 }
@@ -302,7 +299,6 @@ func (s *Stream) recycleTokens() (n int) {
 	}
 	s.buffers = nil
 	s.heads = nil
-	s.bufferSize = 0
 	s.bufferLock.Unlock()
 	return
 }
@@ -315,11 +311,11 @@ func (s *Stream) notifyReadEvent() {
 	}
 }
 
-// update window value and notify window change
-func (s *Stream) notifyWindowChangeEvent(window uint32) {
-	atomic.StoreUint32(&s.sendWindow, window)
+// notify n bytes has consumed by peer
+func (s *Stream) notifyBytesSink(n uint32) {
+	atomic.AddUint32(&s.numSink, n)
 	select {
-	case s.chWindowChange <- struct{}{}:
+	case s.chSink <- struct{}{}:
 	default:
 	}
 }

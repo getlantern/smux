@@ -10,15 +10,15 @@ const (
 )
 
 const ( // cmds
-	cmdSYN byte = iota // stream open
-	cmdFIN             // stream close, a.k.a EOF mark
-	cmdPSH             // data push
-	cmdNOP             // no operation
-	cmdWND             // notify window to peer, window size is encoded in data as little-endian uint32
+	cmdSYN  byte = iota // stream open
+	cmdFIN              // stream close, a.k.a EOF mark
+	cmdPSH              // data push
+	cmdNOP              // no operation
+	cmdSINK             // notify bytes consumed by remote peer-end
 )
 
 const (
-	szWindowUpdate = 4
+	szCmdSINK = 4
 )
 
 const (
