@@ -14,6 +14,11 @@ const ( // cmds
 	cmdFIN             // stream close, a.k.a EOF mark
 	cmdPSH             // data push
 	cmdNOP             // no operation
+	cmdWND             // notify window to peer, window size is encoded in data as little-endian uint32
+)
+
+const (
+	szWindowUpdate = 4
 )
 
 const (

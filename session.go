@@ -290,6 +290,7 @@ func (s *Session) returnTokens(n int) {
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
 	var hdr rawHeader
+	win := make([]byte, szWindowUpdate)
 
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
@@ -343,6 +344,17 @@ func (s *Session) recvLoop() {
 						s.notifyReadError(errors.WithStack(err))
 						return
 					}
+				}
+			case cmdWND:
+				if _, err := io.ReadFull(s.conn, win); err == nil {
+					s.streamLock.Lock()
+					if stream, ok := s.streams[sid]; ok {
+						stream.notifyWindowChangeEvent(binary.LittleEndian.Uint32(win))
+					}
+					s.streamLock.Unlock()
+				} else {
+					s.notifyReadError(errors.WithStack(err))
+					return
 				}
 			default:
 				s.notifyProtoError(errors.WithStack(errInvalidProtocol))
