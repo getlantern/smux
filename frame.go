@@ -5,16 +5,14 @@ import (
 	"fmt"
 )
 
-const (
-	version = 2
-)
-
 const ( // cmds
-	cmdSYN  byte = iota // stream open
-	cmdFIN              // stream close, a.k.a EOF mark
-	cmdPSH              // data push
-	cmdNOP              // no operation
-	cmdSINK             // notify bytes consumed by remote peer-end
+	cmdSYN byte = iota // stream open
+	cmdFIN             // stream close, a.k.a EOF mark
+	cmdPSH             // data push
+	cmdNOP             // no operation
+
+	// available for ver2
+	cmdSINK // notify bytes consumed by remote peer-end
 )
 
 const (
@@ -37,7 +35,7 @@ type Frame struct {
 	data []byte
 }
 
-func newFrame(cmd byte, sid uint32) Frame {
+func newFrame(version byte, cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 

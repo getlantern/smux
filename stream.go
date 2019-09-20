@@ -105,7 +105,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		if n > 0 {
 			s.sess.returnTokens(n)
 			if sendSink {
-				frame := newFrame(cmdSINK, s.id)
+				frame := newFrame(byte(s.sess.config.Version), cmdSINK, s.id)
 				frame.data = make([]byte, szCmdSINK)
 				binary.LittleEndian.PutUint32(frame.data, uint32(s.sess.config.MaxStreamBuffer/2))
 				s.sess.writeFrameInternal(frame, deadline, 0)
@@ -154,7 +154,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	// frame split and transmit process
 	sent := 0
-	frame := newFrame(cmdPSH, s.id)
+	frame := newFrame(byte(s.sess.config.Version), cmdPSH, s.id)
 
 	for {
 		// per stream sliding window control
@@ -215,7 +215,7 @@ func (s *Stream) Close() error {
 	})
 
 	if once {
-		_, err = s.sess.writeFrame(newFrame(cmdFIN, s.id))
+		_, err = s.sess.writeFrame(newFrame(byte(s.sess.config.Version), cmdFIN, s.id))
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
