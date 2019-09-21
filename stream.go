@@ -40,6 +40,7 @@ type Stream struct {
 	// per stream sliding window control
 	numRead    uint32 // number of consumed bytes
 	numWritten uint32 // count num of bytes written
+	incr       uint32 // counting for sending
 
 	// UPD command
 	peerConsumed uint32        // num of bytes the peer has consumed
@@ -93,8 +94,10 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		// won't slow down because of waiting for ACK, as long as the
 		// consumer keeps on reading data
 		s.numRead += uint32(n)
-		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) {
+		s.incr += uint32(n)
+		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) {
 			notifyConsumed = s.numRead
+			s.incr = 0
 		}
 		s.bufferLock.Unlock()
 
