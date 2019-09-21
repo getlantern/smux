@@ -6,17 +6,21 @@ import (
 )
 
 const ( // cmds
+	// protocol version 1:
 	cmdSYN byte = iota // stream open
 	cmdFIN             // stream close, a.k.a EOF mark
 	cmdPSH             // data push
 	cmdNOP             // no operation
 
-	// available for ver2
-	cmdSINK // notify bytes consumed by remote peer-end
+	// protocol version 2 extra commands
+	// notify bytes consumed by remote peer-end
+	// data format:
+	// |4B data consumed(ACK)| 4B window size(WINDOW) |
+	cmdUPD
 )
 
 const (
-	szCmdSINK = 4
+	szCmdUPD = 8
 )
 
 const (
@@ -60,4 +64,13 @@ func (h rawHeader) StreamID() uint32 {
 func (h rawHeader) String() string {
 	return fmt.Sprintf("Version:%d Cmd:%d StreamID:%d Length:%d",
 		h.Version(), h.Cmd(), h.StreamID(), h.Length())
+}
+
+type updHeader [szCmdUPD]byte
+
+func (h updHeader) Consumed() uint32 {
+	return binary.LittleEndian.Uint32(h[:])
+}
+func (h updHeader) Window() uint32 {
+	return binary.LittleEndian.Uint32(h[4:])
 }

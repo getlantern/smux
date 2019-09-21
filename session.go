@@ -300,7 +300,7 @@ func (s *Session) returnTokens(n int) {
 // recvLoop keeps on reading from underlying connection if tokens are available
 func (s *Session) recvLoop() {
 	var hdr rawHeader
-	sink := make([]byte, szCmdSINK)
+	var updHdr updHeader
 
 	for {
 		for atomic.LoadInt32(&s.bucket) <= 0 && !s.IsClosed() {
@@ -355,11 +355,11 @@ func (s *Session) recvLoop() {
 						return
 					}
 				}
-			case cmdSINK:
-				if _, err := io.ReadFull(s.conn, sink); err == nil {
+			case cmdUPD:
+				if _, err := io.ReadFull(s.conn, updHdr[:]); err == nil {
 					s.streamLock.Lock()
 					if stream, ok := s.streams[sid]; ok {
-						stream.notifyBytesSink(binary.LittleEndian.Uint32(sink))
+						stream.update(updHdr.Consumed(), updHdr.Window())
 					}
 					s.streamLock.Unlock()
 				} else {

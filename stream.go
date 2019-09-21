@@ -29,7 +29,7 @@ type Stream struct {
 	die     chan struct{}
 	dieOnce sync.Once
 
-	// FIN
+	// FIN command
 	chFinEvent   chan struct{}
 	finEventOnce sync.Once
 
@@ -38,10 +38,13 @@ type Stream struct {
 	writeDeadline atomic.Value
 
 	// per stream sliding window control
-	numRead    uint32        // temporary tracking of bytes read, capped to half window
-	numWritten uint32        // count num of bytes written
-	numSink    uint32        // peer data consumed, starting from 0
-	chSink     chan struct{} // notify of remote data consuming
+	numRead    uint32 // number of consumed bytes to notify peer
+	numWritten uint32 // count num of bytes written
+
+	// UPD command
+	peerConsumed uint32        // num of bytes the peer has consumed
+	peerWindow   uint32        // peer window, initialized to 256KB, updated by peer
+	chUpdate     chan struct{} // notify of remote data consuming and window update
 }
 
 // newStream initiates a Stream struct
@@ -49,11 +52,12 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s := new(Stream)
 	s.id = id
 	s.chReadEvent = make(chan struct{}, 1)
-	s.chSink = make(chan struct{}, 1)
+	s.chUpdate = make(chan struct{}, 1)
 	s.frameSize = frameSize
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
+	s.peerWindow = 262144 // 256KB initial window size
 	return s
 }
 
@@ -69,7 +73,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	}
 
 	for {
-		var sendSink bool
+		var notifyConsumed uint32
 		s.bufferLock.Lock()
 		if len(s.buffers) > 0 {
 			n = copy(b, s.buffers[0])
@@ -90,8 +94,8 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		// consumer keeps on reading data
 		s.numRead += uint32(n)
 		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) {
-			sendSink = true
-			s.numRead %= uint32(s.sess.config.MaxStreamBuffer / 2)
+			notifyConsumed = s.numRead
+			s.numRead = 0
 		}
 		s.bufferLock.Unlock()
 
@@ -106,10 +110,12 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 
 		if n > 0 {
 			s.sess.returnTokens(n)
-			if sendSink {
-				frame := newFrame(byte(s.sess.config.Version), cmdSINK, s.id)
-				frame.data = make([]byte, szCmdSINK)
-				binary.LittleEndian.PutUint32(frame.data, uint32(s.sess.config.MaxStreamBuffer/2))
+			if notifyConsumed > 0 {
+				frame := newFrame(byte(s.sess.config.Version), cmdUPD, s.id)
+				var hdr updHeader
+				binary.LittleEndian.PutUint32(hdr[:], notifyConsumed)
+				binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
+				frame.data = hdr[:]
 				s.sess.writeFrameInternal(frame, deadline, 0)
 			}
 			return n, nil
@@ -160,10 +166,10 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	for {
 		// per stream sliding window control
-		// [.... [sink... numWritten] ... win... ]
-		// [.... [sink..........+MaxStreamBuffer]]
+		// [.... [consumed... numWritten] ... win... ]
+		// [.... [consumed...................+rmtwnd]]
 		var bts []byte
-		win := s.sess.config.MaxStreamBuffer - int(s.numWritten-atomic.LoadUint32(&s.numSink))
+		win := int(atomic.LoadUint32(&s.peerWindow) - (s.numWritten - atomic.LoadUint32(&s.peerConsumed)))
 		if win > 0 {
 			if win > len(b) {
 				bts = b
@@ -198,7 +204,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				return sent, errors.WithStack(io.ErrClosedPipe)
 			case <-deadline:
 				return sent, errors.WithStack(errTimeout)
-			case <-s.chSink:
+			case <-s.chUpdate:
 				continue
 			}
 		} else {
@@ -313,11 +319,12 @@ func (s *Stream) notifyReadEvent() {
 	}
 }
 
-// notify n bytes has consumed by peer
-func (s *Stream) notifyBytesSink(n uint32) {
-	atomic.AddUint32(&s.numSink, n)
+// update command
+func (s *Stream) update(consumed uint32, window uint32) {
+	atomic.AddUint32(&s.peerConsumed, consumed)
+	atomic.StoreUint32(&s.peerWindow, window)
 	select {
-	case s.chSink <- struct{}{}:
+	case s.chUpdate <- struct{}{}:
 	default:
 	}
 }
