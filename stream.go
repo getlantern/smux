@@ -38,7 +38,7 @@ type Stream struct {
 	writeDeadline atomic.Value
 
 	// per stream sliding window control
-	numRead    uint32 // number of consumed bytes to notify peer
+	numRead    uint32 // number of consumed bytes
 	numWritten uint32 // count num of bytes written
 
 	// UPD command
@@ -95,7 +95,6 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		s.numRead += uint32(n)
 		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) {
 			notifyConsumed = s.numRead
-			s.numRead = 0
 		}
 		s.bufferLock.Unlock()
 
@@ -169,6 +168,9 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		// [.... [consumed... numWritten] ... win... ]
 		// [.... [consumed...................+rmtwnd]]
 		var bts []byte
+		// note:
+		// even if uint32 overflow, this math still works:
+		// eg: uint32(0) - uint32(math.MaxUint32) = 1
 		win := int(atomic.LoadUint32(&s.peerWindow) - (s.numWritten - atomic.LoadUint32(&s.peerConsumed)))
 		if win > 0 {
 			if win > len(b) {
@@ -321,7 +323,7 @@ func (s *Stream) notifyReadEvent() {
 
 // update command
 func (s *Stream) update(consumed uint32, window uint32) {
-	atomic.AddUint32(&s.peerConsumed, consumed)
+	atomic.StoreUint32(&s.peerConsumed, consumed)
 	atomic.StoreUint32(&s.peerWindow, window)
 	select {
 	case s.chUpdate <- struct{}{}:
