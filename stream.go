@@ -82,11 +82,13 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 				s.heads = s.heads[1:]
 			}
 		}
-		s.numRead += uint32(n)
+
+		// in an ideal environment:
 		// if more than half of buffer has consumed, send read ack to peer
 		// based on round-trip time of ACK, continous flowing data
 		// won't slow down because of waiting for ACK, as long as the
 		// consumer keeps on reading data
+		s.numRead += uint32(n)
 		if s.numRead >= uint32(s.sess.config.MaxStreamBuffer/2) {
 			sendSink = true
 			s.numRead %= uint32(s.sess.config.MaxStreamBuffer / 2)
@@ -158,8 +160,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 
 	for {
 		// per stream sliding window control
-		// [.... [sink... numWrite] ... win... ]
-		// [.... [sink.........MaxStreamBuffer]]
+		// [.... [sink... numWritten] ... win... ]
+		// [.... [sink..........+MaxStreamBuffer]]
 		var bts []byte
 		win := s.sess.config.MaxStreamBuffer - int(s.numWritten-atomic.LoadUint32(&s.numSink))
 		if win > 0 {
