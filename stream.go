@@ -93,9 +93,10 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		// based on round-trip time of ACK, continous flowing data
 		// won't slow down because of waiting for ACK, as long as the
 		// consumer keeps on reading data
+		// s.numRead == n also notify window at the first read
 		s.numRead += uint32(n)
 		s.incr += uint32(n)
-		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) {
+		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == uint32(n) {
 			notifyConsumed = s.numRead
 			s.incr = 0
 		}
