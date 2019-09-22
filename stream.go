@@ -58,7 +58,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.sess = sess
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
-	s.peerWindow = 262144 // 256KB initial window size
+	s.peerWindow = initialPeerWindow // set to initial window size
 	return s
 }
 

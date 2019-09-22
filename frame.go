@@ -18,13 +18,18 @@ const ( // cmds
 
 	// protocol version 2 extra commands
 	// notify bytes consumed by remote peer-end
-	// data format:
-	// |4B data consumed(ACK)| 4B window size(WINDOW) |
 	cmdUPD
 )
 
 const (
+	// data size of cmdUPD, format:
+	// |4B data consumed(ACK)| 4B window size(WINDOW) |
 	szCmdUPD = 8
+)
+
+const (
+	// initial peer window guess, a slow-start
+	initialPeerWindow = 262144
 )
 
 const (
