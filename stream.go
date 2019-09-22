@@ -119,9 +119,14 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 				binary.LittleEndian.PutUint32(hdr[:], notifyConsumed)
 				binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
 				frame.data = hdr[:]
-				s.sess.writeFrameInternal(frame, deadline, 0)
+
+				// cmdUPD
+				// if timeout/blocking happen, return error to caller correctly
+				_, err := s.sess.writeFrameInternal(frame, deadline, 0)
+				return n, err
+			} else {
+				return n, nil
 			}
-			return n, nil
 		}
 
 		select {
