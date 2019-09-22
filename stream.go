@@ -139,7 +139,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		case <-s.sess.chProtoError:
 			return 0, s.sess.protoError.Load().(error)
 		case <-deadline:
-			return 0, errors.WithStack(errTimeout)
+			return 0, errors.WithStack(ErrTimeout)
 		case <-s.die:
 			return 0, errors.WithStack(io.ErrClosedPipe)
 		}
@@ -214,7 +214,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 			case <-s.die:
 				return sent, errors.WithStack(io.ErrClosedPipe)
 			case <-deadline:
-				return sent, errors.WithStack(errTimeout)
+				return sent, errors.WithStack(ErrTimeout)
 			case <-s.chUpdate:
 				continue
 			}
