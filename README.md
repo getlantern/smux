@@ -63,10 +63,14 @@ CMD:
     cmdFIN(1)
     cmdPSH(2)
     cmdNOP(3)
+    cmdUPD(4)
     
 STREAMID:
     client use odd numbers starts from 1
     server use even numbers starts from 0
+    
+cmdUPD:
+    | CONSUMED(4B) | WINDOW(4B) |
 ```
 
 ## Usage
