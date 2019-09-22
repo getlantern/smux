@@ -179,10 +179,17 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		var bts []byte
 		// note:
 		// even if uint32 overflow, this math still works:
-		// eg: uint32(0) - uint32(math.MaxUint32) = 1
-		win := int(atomic.LoadUint32(&s.peerWindow) - (s.numWritten - atomic.LoadUint32(&s.peerConsumed)))
+		// eg1: uint32(0) - uint32(math.MaxUint32) = 1
+		// eg2: int32(uint32(0) - uint32(1)) = -1
+		// security check for misbehavior
+		inflight := int32(s.numWritten - atomic.LoadUint32(&s.peerConsumed))
+		if inflight < 0 {
+			return 0, errors.Wrap(ErrInvalidProtocol, "peer consumed more than sent")
+		}
+
+		win := int32(atomic.LoadUint32(&s.peerWindow)) - inflight
 		if win > 0 {
-			if win > len(b) {
+			if win > int32(len(b)) {
 				bts = b
 				b = nil
 			} else {

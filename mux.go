@@ -7,6 +7,7 @@ package smux
 import (
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/pkg/errors"
@@ -67,6 +68,9 @@ func VerifyConfig(config *Config) error {
 	}
 	if config.MaxStreamBuffer > config.MaxReceiveBuffer {
 		return errors.New("max stream buffer must not be larger than max receive buffer")
+	}
+	if config.MaxStreamBuffer > math.MaxInt32 {
+		return errors.New("max stream buffer cannot be larger than 2147483647")
 	}
 	return nil
 }
