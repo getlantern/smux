@@ -14,8 +14,6 @@ import (
 
 // Config is used to tune the Smux session
 type Config struct {
-	// Version specify protocol version
-	Version int
 	// KeepAliveInterval is how often to send a NOP command to the remote
 	KeepAliveInterval time.Duration
 
@@ -39,7 +37,6 @@ type Config struct {
 // DefaultConfig is used to return a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Version:           2,
 		KeepAliveInterval: 10 * time.Second,
 		KeepAliveTimeout:  30 * time.Second,
 		MaxFrameSize:      32768,

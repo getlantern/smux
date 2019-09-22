@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+const (
+	version = 2
+)
+
 const ( // cmds
 	// protocol version 1:
 	cmdSYN byte = iota // stream open
@@ -39,7 +43,7 @@ type Frame struct {
 	data []byte
 }
 
-func newFrame(version byte, cmd byte, sid uint32) Frame {
+func newFrame(cmd byte, sid uint32) Frame {
 	return Frame{ver: version, cmd: cmd, sid: sid}
 }
 
