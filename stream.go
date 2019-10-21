@@ -182,7 +182,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		// eg1: uint32(0) - uint32(math.MaxUint32) = 1
 		// eg2: int32(uint32(0) - uint32(1)) = -1
 		// security check for misbehavior
-		inflight := int32(s.numWritten - atomic.LoadUint32(&s.peerConsumed))
+		inflight := int32(atomic.LoadUint32(&s.numWritten) - atomic.LoadUint32(&s.peerConsumed))
 		if inflight < 0 {
 			return 0, errors.Wrap(ErrInvalidProtocol, "peer consumed more than sent")
 		}
@@ -204,8 +204,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				}
 				frame.data = bts[:sz]
 				bts = bts[sz:]
-				n, err := s.sess.writeFrameInternal(frame, deadline, uint64(s.numWritten))
-				s.numWritten += uint32(sz)
+				n, err := s.sess.writeFrameInternal(frame, deadline, uint64(atomic.LoadUint32(&s.numWritten)))
+				atomic.AddUint32(&s.numWritten, uint32(sz))
 				sent += n
 				if err != nil {
 					return sent, errors.WithStack(err)
