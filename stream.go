@@ -147,6 +147,9 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 }
 
 // Write implements net.Conn
+//
+// Note that the behavior when multiple goroutines write concurrently is not deterministic,
+// frames may interleave in random way.
 func (s *Stream) Write(b []byte) (n int, err error) {
 	// check empty input
 	if len(b) == 0 {
