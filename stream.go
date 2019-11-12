@@ -221,6 +221,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		// this blocking behavior will inform upper layer to do flow control
 		if len(b) > 0 {
 			select {
+			case <-s.chFinEvent: // if fin arrived, future window update is impossible
+				return 0, errors.WithStack(io.EOF)
 			case <-s.die:
 				return sent, errors.WithStack(io.ErrClosedPipe)
 			case <-deadline:
