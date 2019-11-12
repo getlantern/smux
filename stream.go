@@ -225,6 +225,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				return sent, errors.WithStack(io.ErrClosedPipe)
 			case <-deadline:
 				return sent, errors.WithStack(ErrTimeout)
+			case <-s.sess.chSocketWriteError:
+				return sent, s.sess.socketWriteError.Load().(error)
 			case <-s.chUpdate:
 				continue
 			}
