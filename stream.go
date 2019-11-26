@@ -102,48 +102,104 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		}
 		s.bufferLock.Unlock()
 
-		// create timer
-		var timer *time.Timer
-		var deadline <-chan time.Time
-		if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-			timer = time.NewTimer(time.Until(d))
-			defer timer.Stop()
-			deadline = timer.C
-		}
-
 		if n > 0 {
 			s.sess.returnTokens(n)
 			if notifyConsumed > 0 {
-				frame := newFrame(cmdUPD, s.id)
-				var hdr updHeader
-				binary.LittleEndian.PutUint32(hdr[:], notifyConsumed)
-				binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
-				frame.data = hdr[:]
-
-				// cmdUPD
-				// if timeout/blocking happen, return error to caller correctly
-				_, err := s.sess.writeFrameInternal(frame, deadline, 0)
+				err := s.sendWindowUpdate(notifyConsumed)
 				return n, err
 			} else {
 				return n, nil
 			}
-		}
-
-		select {
-		case <-s.chReadEvent:
-			continue
-		case <-s.chFinEvent:
-			return 0, errors.WithStack(io.EOF)
-		case <-s.sess.chSocketReadError:
-			return 0, s.sess.socketReadError.Load().(error)
-		case <-s.sess.chProtoError:
-			return 0, s.sess.protoError.Load().(error)
-		case <-deadline:
-			return 0, errors.WithStack(ErrTimeout)
-		case <-s.die:
-			return 0, errors.WithStack(io.ErrClosedPipe)
+		} else if ew := s.waitRead(); ew != nil {
+			return 0, ew
 		}
 	}
+}
+
+// WriteTo implements io.WriteTo
+func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
+	for {
+		var notifyConsumed uint32
+		var buf []byte
+		s.bufferLock.Lock()
+		if len(s.buffers) > 0 {
+			buf = s.buffers[0]
+			s.buffers = s.buffers[1:]
+			s.heads = s.heads[1:]
+		}
+		s.numRead += uint32(len(buf))
+		s.incr += uint32(len(buf))
+		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == uint32(len(buf)) {
+			notifyConsumed = s.numRead
+			s.incr = 0
+		}
+		s.bufferLock.Unlock()
+
+		if buf != nil {
+			nw, ew := w.Write(buf)
+			defaultAllocator.Put(buf)
+			if nw > 0 {
+				s.sess.returnTokens(nw)
+				n += int64(nw)
+			}
+
+			if ew != nil {
+				return n, ew
+			}
+
+			if notifyConsumed > 0 {
+				if err := s.sendWindowUpdate(notifyConsumed); err != nil {
+					return n, ew
+				}
+			}
+		} else if ew := s.waitRead(); ew != nil {
+			return n, ew
+		}
+	}
+}
+
+func (s *Stream) sendWindowUpdate(consumed uint32) error {
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer = time.NewTimer(time.Until(d))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
+	frame := newFrame(cmdUPD, s.id)
+	var hdr updHeader
+	binary.LittleEndian.PutUint32(hdr[:], consumed)
+	binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
+	frame.data = hdr[:]
+	_, err := s.sess.writeFrameInternal(frame, deadline, 0)
+	return err
+}
+
+func (s *Stream) waitRead() error {
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if d, ok := s.readDeadline.Load().(time.Time); ok && !d.IsZero() {
+		timer = time.NewTimer(time.Until(d))
+		defer timer.Stop()
+		deadline = timer.C
+	}
+
+	select {
+	case <-s.chReadEvent:
+		return nil
+	case <-s.chFinEvent:
+		return errors.WithStack(io.EOF)
+	case <-s.sess.chSocketReadError:
+		return s.sess.socketReadError.Load().(error)
+	case <-s.sess.chProtoError:
+		return s.sess.protoError.Load().(error)
+	case <-deadline:
+		return errors.WithStack(ErrTimeout)
+	case <-s.die:
+		return errors.WithStack(io.ErrClosedPipe)
+	}
+
 }
 
 // Write implements net.Conn
