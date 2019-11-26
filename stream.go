@@ -149,7 +149,7 @@ func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
 
 			if notifyConsumed > 0 {
 				if err := s.sendWindowUpdate(notifyConsumed); err != nil {
-					return n, ew
+					return n, err
 				}
 			}
 		} else if ew := s.waitRead(); ew != nil {
