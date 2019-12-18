@@ -17,6 +17,7 @@ type Stream struct {
 	sess *Session
 
 	buffers [][]byte
+	heads   [][]byte // slice heads kept for recycle
 
 	bufferLock sync.Mutex
 	frameSize  int
@@ -81,6 +82,9 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 			if len(s.buffers[0]) == 0 {
 				s.buffers[0] = nil
 				s.buffers = s.buffers[1:]
+				// full recycle
+				defaultAllocator.Put(s.heads[0])
+				s.heads = s.heads[1:]
 			}
 		}
 
@@ -121,6 +125,7 @@ func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
 		if len(s.buffers) > 0 {
 			buf = s.buffers[0]
 			s.buffers = s.buffers[1:]
+			s.heads = s.heads[1:]
 		}
 		s.numRead += uint32(len(buf))
 		s.incr += uint32(len(buf))
@@ -132,6 +137,7 @@ func (s *Stream) WriteTo(w io.Writer) (n int64, err error) {
 
 		if buf != nil {
 			nw, ew := w.Write(buf)
+			defaultAllocator.Put(buf)
 			s.sess.returnTokens(len(buf))
 			if nw > 0 {
 				n += int64(nw)
@@ -368,6 +374,7 @@ func (s *Stream) RemoteAddr() net.Addr {
 func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
+	s.heads = append(s.heads, buf)
 	s.bufferLock.Unlock()
 	return
 }
@@ -377,8 +384,10 @@ func (s *Stream) recycleTokens() (n int) {
 	s.bufferLock.Lock()
 	for k := range s.buffers {
 		n += len(s.buffers[k])
+		defaultAllocator.Put(s.heads[k])
 	}
 	s.buffers = nil
+	s.heads = nil
 	s.bufferLock.Unlock()
 	return
 }
