@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
 // Stream implements net.Conn
@@ -189,15 +187,15 @@ func (s *Stream) waitRead() error {
 	case <-s.chReadEvent:
 		return nil
 	case <-s.chFinEvent:
-		return errors.WithStack(io.EOF)
+		return io.EOF
 	case <-s.sess.chSocketReadError:
 		return s.sess.socketReadError.Load().(error)
 	case <-s.sess.chProtoError:
 		return s.sess.protoError.Load().(error)
 	case <-deadline:
-		return errors.WithStack(ErrTimeout)
+		return ErrTimeout
 	case <-s.die:
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 
 }
@@ -215,7 +213,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	// check if stream has closed
 	select {
 	case <-s.die:
-		return 0, errors.WithStack(io.ErrClosedPipe)
+		return 0, io.ErrClosedPipe
 	default:
 	}
 
@@ -243,7 +241,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		// security check for misbehavior
 		inflight := int32(atomic.LoadUint32(&s.numWritten) - atomic.LoadUint32(&s.peerConsumed))
 		if inflight < 0 {
-			return 0, errors.Wrap(ErrInvalidProtocol, "peer consumed more than sent")
+			return 0, ErrConsumed
 		}
 
 		win := int32(atomic.LoadUint32(&s.peerWindow)) - inflight
@@ -267,7 +265,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 				atomic.AddUint32(&s.numWritten, uint32(sz))
 				sent += n
 				if err != nil {
-					return sent, errors.WithStack(err)
+					return sent, err
 				}
 			}
 		}
@@ -278,11 +276,11 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		if len(b) > 0 {
 			select {
 			case <-s.chFinEvent: // if fin arrived, future window update is impossible
-				return 0, errors.WithStack(io.EOF)
+				return 0, io.EOF
 			case <-s.die:
-				return sent, errors.WithStack(io.ErrClosedPipe)
+				return sent, io.ErrClosedPipe
 			case <-deadline:
-				return sent, errors.WithStack(ErrTimeout)
+				return sent, ErrTimeout
 			case <-s.sess.chSocketWriteError:
 				return sent, s.sess.socketWriteError.Load().(error)
 			case <-s.chUpdate:
@@ -308,7 +306,7 @@ func (s *Stream) Close() error {
 		s.sess.streamClosed(s.id)
 		return err
 	} else {
-		return errors.WithStack(io.ErrClosedPipe)
+		return io.ErrClosedPipe
 	}
 }
 
@@ -339,10 +337,10 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 // A zero time value disables the deadlines.
 func (s *Stream) SetDeadline(t time.Time) error {
 	if err := s.SetReadDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	if err := s.SetWriteDeadline(t); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	return nil
 }
