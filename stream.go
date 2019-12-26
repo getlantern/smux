@@ -67,50 +67,67 @@ func (s *Stream) ID() uint32 {
 
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
+	for {
+		n, err = s.TryRead(b)
+		if err == ErrWouldBlock {
+			if ew := s.waitRead(); ew != nil {
+				return 0, ew
+			}
+		} else {
+			return n, err
+		}
+	}
+}
+
+// TryRead is the nonblocking version of Read
+func (s *Stream) TryRead(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
 
-	for {
-		var notifyConsumed uint32
-		s.bufferLock.Lock()
-		if len(s.buffers) > 0 {
-			n = copy(b, s.buffers[0])
-			s.buffers[0] = s.buffers[0][n:]
-			if len(s.buffers[0]) == 0 {
-				s.buffers[0] = nil
-				s.buffers = s.buffers[1:]
-				// full recycle
-				defaultAllocator.Put(s.heads[0])
-				s.heads = s.heads[1:]
-			}
+	var notifyConsumed uint32
+	s.bufferLock.Lock()
+	if len(s.buffers) > 0 {
+		n = copy(b, s.buffers[0])
+		s.buffers[0] = s.buffers[0][n:]
+		if len(s.buffers[0]) == 0 {
+			s.buffers[0] = nil
+			s.buffers = s.buffers[1:]
+			// full recycle
+			defaultAllocator.Put(s.heads[0])
+			s.heads = s.heads[1:]
 		}
+	}
 
-		// in an ideal environment:
-		// if more than half of buffer has consumed, send read ack to peer
-		// based on round-trip time of ACK, continous flowing data
-		// won't slow down because of waiting for ACK, as long as the
-		// consumer keeps on reading data
-		// s.numRead == n also notify window at the first read
-		s.numRead += uint32(n)
-		s.incr += uint32(n)
-		if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == uint32(n) {
-			notifyConsumed = s.numRead
-			s.incr = 0
-		}
-		s.bufferLock.Unlock()
+	// in an ideal environment:
+	// if more than half of buffer has consumed, send read ack to peer
+	// based on round-trip time of ACK, continous flowing data
+	// won't slow down because of waiting for ACK, as long as the
+	// consumer keeps on reading data
+	// s.numRead == n also notify window at the first read
+	s.numRead += uint32(n)
+	s.incr += uint32(n)
+	if s.incr >= uint32(s.sess.config.MaxStreamBuffer/2) || s.numRead == uint32(n) {
+		notifyConsumed = s.numRead
+		s.incr = 0
+	}
+	s.bufferLock.Unlock()
 
-		if n > 0 {
-			s.sess.returnTokens(n)
-			if notifyConsumed > 0 {
-				err := s.sendWindowUpdate(notifyConsumed)
-				return n, err
-			} else {
-				return n, nil
-			}
-		} else if ew := s.waitRead(); ew != nil {
-			return 0, ew
+	if n > 0 {
+		s.sess.returnTokens(n)
+		if notifyConsumed > 0 {
+			err := s.sendWindowUpdate(notifyConsumed)
+			return n, err
+		} else {
+			return n, nil
 		}
+	}
+
+	select {
+	case <-s.die:
+		return 0, io.EOF
+	default:
+		return 0, ErrWouldBlock
 	}
 }
 
@@ -373,6 +390,10 @@ func (s *Stream) pushBytes(buf []byte) (written int, err error) {
 	s.bufferLock.Lock()
 	s.buffers = append(s.buffers, buf)
 	s.heads = append(s.heads, buf)
+	// Edge-Trigger
+	if len(s.buffers) == 1 {
+		s.sess.notifyPoll(s)
+	}
 	s.bufferLock.Unlock()
 	return
 }
