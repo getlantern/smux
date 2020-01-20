@@ -1,3 +1,3 @@
-module github.com/xtaci/smux
+module github.com/getlantern/smux
 
 go 1.13
